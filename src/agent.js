@@ -2,28 +2,27 @@
 // den ber om, send resultatene tilbake, gjenta til den er ferdig.
 import Anthropic from '@anthropic-ai/sdk';
 
-const MODELL = process.env.MODELL ?? 'claude-sonnet-5-5';
-
 // Stopper en agent som går i ring før den brenner opp kostnadstaket.
-const MAX_ITERASJONER = Number(process.env.MAX_ITERASJONER ?? 10);
-
-const klient = new Anthropic();
-
 const grå = (t) => `\x1b[90m${t}\x1b[0m`;
 const oransje = (t) => `\x1b[38;5;208m${t}\x1b[0m`;
 const grønn = (t) => `\x1b[32m${t}\x1b[0m`;
 
 export async function kjørAgent({ system, oppgave, verktøy }) {
+  const klient = new Anthropic();
+  const modell = process.env.MODELL ?? 'claude-sonnet-5-5';
+  const maksIterasjoner = Number(process.env.MAX_ITERASJONER ?? 10);
+
   // Bare verktøy med en kjør-funksjon sendes til modellen. Stubbene i
   // verktoy.js blir med av seg selv når dere implementerer dem.
   const aktive = verktøy.filter((v) => v.kjør);
   const etterNavn = new Map(aktive.map((v) => [v.definisjon.name, v]));
+  const toolCalls = [];
 
   const messages = [{ role: 'user', content: oppgave }];
 
-  for (let i = 1; i <= MAX_ITERASJONER; i++) {
+  for (let i = 1; i <= maksIterasjoner; i++) {
     const svar = await klient.messages.create({
-      model: MODELL,
+      model: modell,
       max_tokens: 16000,
       output_config: { effort: 'medium' },
       system,
@@ -39,14 +38,14 @@ export async function kjørAgent({ system, oppgave, verktøy }) {
       }
     }
 
-    if (svar.stop_reason === 'end_turn') return svar;
+    if (svar.stop_reason === 'end_turn') return { ...svar, toolCalls };
     if (svar.stop_reason === 'refusal') {
       console.log(oransje(`\n✖ Modellen avslo (${svar.stop_details?.category ?? 'ukjent grunn'}).`));
-      return svar;
+      return { ...svar, toolCalls };
     }
     if (svar.stop_reason === 'max_tokens') {
       console.log(oransje('\n✖ Svaret ble kuttet (max_tokens).'));
-      return svar;
+      return { ...svar, toolCalls };
     }
 
     // Modellen kan be om flere verktøy samtidig. Alle resultatene må tilbake
@@ -55,12 +54,14 @@ export async function kjørAgent({ system, oppgave, verktøy }) {
     const resultater = [];
     for (const k of kall) {
       console.log(oransje(`→ ${k.name}`) + grå(` ${JSON.stringify(k.input)}`));
+      toolCalls.push({ name: k.name, input: k.input });
       resultater.push(await kjørVerktøy(etterNavn, k));
     }
     messages.push({ role: 'user', content: resultater });
   }
 
-  console.log(oransje(`\n✖ Stoppet etter ${MAX_ITERASJONER} runder (MAX_ITERASJONER).`));
+  console.log(oransje(`\n✖ Stoppet etter ${maksIterasjoner} runder (MAX_ITERASJONER).`));
+  return { content: [], toolCalls };
 }
 
 async function kjørVerktøy(etterNavn, kall) {
